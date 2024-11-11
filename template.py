@@ -703,8 +703,6 @@ class Tab2(QWidget):
             self.cap.release()
         event.accept()
 
-        
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -2,6 +2,7 @@ import sys
 import cv2
 import random
 import os
+import math
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QLineEdit, QFormLayout, QPushButton, QFileDialog, QMessageBox, QCheckBox, QComboBox, QTableWidget, QProgressBar, QSpacerItem, QSizePolicy, QTableWidgetItem
 from PyQt5.QtCore import Qt, QTimer
@@ -112,21 +113,30 @@ class TabbedApp(QWidget):
         
     def create_tabs(self):
         # Tab 1: Display some text
-        tab1 = Tab1()
-        self.tabs.addTab(tab1, "Setting Part")
+        self.tab1 = Tab1()
+        self.tabs.addTab(self.tab1, "Setting Part")
         
         # Tab 2: Display different text
-        tab2 = Tab2()
-        self.tabs.addTab(tab2, "Solved Part_LUT")
+        self.tab2 = Tab2()
+        self.tabs.addTab(self.tab2, "Solved Part_LUT")
 
     def closeEvent(self, event):
-        # Close the video player if it is open
-        if hasattr(self, 'tab1', 'video_player'):
-            self.tab1.video_player.close()
-        if hasattr(self, 'tab2', 'cap'):
-            self.tab2.cap.release()
-        if hasattr(self, 'tab2', 'timer'):
-            self.tab2.timer.stop()
+        # # Close the video player if it is open
+        # if hasattr(self, 'tab1', 'video_player'):
+        #     self.tab1.video_player.close()
+        # if hasattr(self, 'tab2', 'cap'):
+        #     self.tab2.cap.release()
+        # if hasattr(self, 'tab2', 'timer'):
+        #     self.tab2.timer.stop()
+
+        if hasattr(self.tab1, 'cleanup'):
+            self.tab1.cleanup()
+        
+        # Clean up tab2 if it has any resources to stop
+        if hasattr(self.tab2, 'cleanup'):
+            self.tab2.cleanup()
+
+        event.accept()
         event.accept()
 
 class Tab1(QWidget):
@@ -137,6 +147,7 @@ class Tab1(QWidget):
         self.y_axis = 0
 
         self.video_paths = []
+        self.video_player = None
 
         self.power_consumption = False
         self.power_square_size = 16
@@ -329,21 +340,24 @@ class Tab1(QWidget):
         global video_width, video_height
 
         if self.video_paths:
-            self.video_player = VideoPlayer(
-                self.video_paths,
-                self.x_axis,
-                self.y_axis,
-                video_width,
-                video_height,
-                self.power_consumption,
-                self.power_square_size,
-                self.power_brightness,
-                self.power_contrast
-            )
-            self.video_player.show()
+            if self.power_consumption and (video_height < self.power_square_size or video_width < self.power_square_size):
+                self.show_error('power consumption square size cannot be bigger than video size')
+            else:
+                self.video_player = VideoPlayer(
+                    self.video_paths,
+                    self.x_axis,
+                    self.y_axis,
+                    video_width,
+                    video_height,
+                    self.power_consumption,
+                    self.power_square_size,
+                    self.power_brightness,
+                    self.power_contrast
+                )
+                self.video_player.show()
 
-            self.pause_button.setVisible(True)
-            self.stop_button.setVisible(True)
+                self.pause_button.setVisible(True)
+                self.stop_button.setVisible(True)
 
     def play_video(self):
         if hasattr(self, 'video_player'):
@@ -368,9 +382,16 @@ class Tab1(QWidget):
     def show_error(self, message):
         QMessageBox.warning(self, "Invalid Input", message)
 
+    def cleanup(self):
+        if self.video_player:
+            self.video_player.close()
+            self.video_player.deleteLater()
+
 class Tab2(QWidget):
     def __init__(self):
         super().__init__()
+
+        self.multiple_videos_paths = None
         
         # Video display labels with reduced size
         self.video_left_label = QLabel(self)
@@ -389,7 +410,6 @@ class Tab2(QWidget):
         # self.size_selector.setVisible(False)
 
         # Brightness adjustment buttons
-        # self.increase_brightness_button = QPushButton("Increase Brightness", self)
         self.brightness_input_field = QLineEdit(self)
         self.brightness_input_field.setPlaceholderText('0')
         self.brightness_input_field.textChanged.connect(self.validate_brightness_input)
@@ -401,9 +421,14 @@ class Tab2(QWidget):
         # Play and Pause buttons
         self.play_button = QPushButton("Play", self)
         self.play_button.clicked.connect(self.play_video)
+        self.play_button.setVisible(False)
 
         self.pause_button = QPushButton("Pause", self)
         self.pause_button.clicked.connect(self.pause_video)
+        self.pause_button.setVisible(False)
+
+        self.multiple_videos = QPushButton("Apply to Multiple Videos", self)
+        self.multiple_videos.clicked.connect(self.apply_to_multiple_videos)
 
         # Table to display coordinates
         self.coordinates_table = QTableWidget(self)
@@ -414,6 +439,7 @@ class Tab2(QWidget):
         self.save_dir_button = QPushButton("Select Save Directory", self)
         self.save_dir_button.clicked.connect(self.select_save_dir)
         self.save_dir_label = QLabel(self.save_dir, self)
+
 
         # Placeholder button for future functionality
         self.placeholder_button = QPushButton("Save", self)
@@ -443,6 +469,7 @@ class Tab2(QWidget):
         button_layout.addWidget(self.contrast_input_field)
         button_layout.addWidget(self.play_button)
         button_layout.addWidget(self.pause_button)
+        button_layout.addWidget(self.multiple_videos)
         
         # Spacer to align video with buttons
         spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
@@ -464,7 +491,9 @@ class Tab2(QWidget):
         layout.addLayout(save_dir_layout)
 
         # Progress bar layout
-        progress_layout = QHBoxLayout()
+        progress_layout = QVBoxLayout()
+        self.progress_label = QLabel(None, self)
+        progress_layout.addWidget(self.progress_label)
         progress_layout.addWidget(self.progress_bar)
         layout.addLayout(progress_layout)
 
@@ -563,20 +592,8 @@ class Tab2(QWidget):
         self.video_path, _ = QFileDialog.getOpenFileName(self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mov)")
         
         if self.video_path:
+            self.pause_button.setVisible(True)
             self.cap = cv2.VideoCapture(self.video_path)
-
-            # self.video_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            # self.video_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-            # self.display_ratio = self.video_width // 360
-            # self.display_width = self.video_width // self.display_ratio
-            # self.display_height = self.video_height // self.display_ratio
-
-            # self.video_left_label.setFixedSize(self.display_width, self.display_height)
-            # self.video_right_label.setFixedSize(self.display_width, self.display_height)
-            # self.video_left_label.setFixedSize(400, 400)
-            # self.video_right_label.setFixedSize(400, 400)
-
             self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
             self.timer.start(self.fps)
             # self.size_selector.setVisible(True)
@@ -589,10 +606,18 @@ class Tab2(QWidget):
             self.save_dir = dir_path
             self.save_dir_label.setText(self.save_dir)
 
+    def apply_to_multiple_videos(self):
+        self.multiple_videos_paths, _ = QFileDialog.getOpenFileNames(self, "Select Video Files", "", "Video Files (*.mp4 *.avi *.mov)")
+
     def save_video(self):
-        if self.video_path:
-            global video_width, video_height
-            cap = cv2.VideoCapture(self.video_path)
+        global video_width, video_height
+        if not self.multiple_videos_paths and self.video_path:
+            self.multiple_videos_paths = [self.video_path]
+
+        for i, v in enumerate(self.multiple_videos_paths):
+            self.progress_label.setText(f'Done {i}/{len(self.multiple_videos_paths)}')
+
+            cap = cv2.VideoCapture(v)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             counter = -1
 
@@ -601,7 +626,7 @@ class Tab2(QWidget):
 
             # Define the codec and create VideoWriter object
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(os.path.join(self.save_dir, 'test.mp4'), fourcc, self.fps, (video_width, video_height))
+            out = cv2.VideoWriter(os.path.join(self.save_dir, f'test{i+1}.mp4'), fourcc, self.fps, (video_width, video_height))
 
             while cap.isOpened():
                 counter += 1
@@ -636,11 +661,13 @@ class Tab2(QWidget):
             self.progress_bar.setValue(100)
             self.progress_bar.setEnabled(False)
 
+        self.progress_label.setText(f'Finished')
+
     def populate_coordinates_table(self):
         # Calculate the number of rows and columns
         global video_width, video_height
-        rows = video_height // self.square_size
-        cols = video_width // self.square_size
+        rows = math.ceil(video_height/self.square_size)
+        cols = math.ceil(video_width/self.square_size)
 
         # Set table dimensions
         self.coordinates_table.setRowCount(rows)
@@ -649,7 +676,9 @@ class Tab2(QWidget):
         # Populate table with coordinates
         for row in range(rows):
             for col in range(cols):
-                coordinate_text = f"({col * self.square_size}, {row * self.square_size})"
+                coordinate_text_x = col * self.square_size if col * self.square_size <= video_width else video_width
+                coordinate_text_y = row * self.square_size if row * self.square_size <= video_height else video_height
+                coordinate_text = f"({coordinate_text_x}, {coordinate_text_y})"
                 cell_item = QTableWidgetItem(coordinate_text)
                 cell_item.setTextAlignment(Qt.AlignCenter)
                 self.coordinates_table.setItem(row, col, cell_item)
@@ -689,9 +718,11 @@ class Tab2(QWidget):
             for rect in self.selected_rect:
                 x, y = rect
 
-                frame_left = cv2.rectangle(frame_left, (x, y), (x + self.square_size, y + self.square_size), (0, 255, 0), 2)
-                frame_right[y:y + self.square_size, x:x + self.square_size] = cv2.addWeighted(frame_right[y:y + self.square_size, x:x + self.square_size], self.contrast_factor, frame_right[y:y + self.square_size, x:x + self.square_size], 0, self.brightness_factor)
-    
+                x2 = x + self.square_size if x + self.square_size <= video_width-1 else video_width-1
+                y2 = y + self.square_size if y + self.square_size <= video_height-1 else video_height-1
+
+                frame_left = cv2.rectangle(frame_left, (x, y), (x2, y2), (0, 255, 0), 2)
+                frame_right[y:y2, x:x2] = cv2.addWeighted(frame_right[y:y2, x:x2], self.contrast_factor, frame_right[y:y2, x:x2], 0, self.brightness_factor)
 
         return frame_left, frame_right
 
@@ -730,12 +761,14 @@ class Tab2(QWidget):
         self.populate_coordinates_table()  # Update table when square size changes
 
     def play_video(self):
-        self.is_playing = True  # Set play state to True
-        print("Video playback started.")
+        self.is_playing = True
+        self.pause_button.setVisible(True)
+        self.play_button.setVisible(False)
 
     def pause_video(self):
-        self.is_playing = False  # Set play state to False
-        print("Video playback paused.")
+        self.is_playing = False
+        self.pause_button.setVisible(False)
+        self.play_button.setVisible(True)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

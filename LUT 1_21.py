@@ -12,11 +12,12 @@ video_width = 800
 video_height = 448
 
 class VideoPlayer(QWidget):
-    def __init__(self, video_paths, x_axis, y_axis, video_width, video_height, power_consumption=False, power_consumption_square=None, power_brightness=None, power_contrast=None):
+    def __init__(self, video_paths, x_axis, y_axis, video_width, video_height, power_consumption=False, power_consumption_square=None, power_brightness=None, power_contrast=None, display_images=False, image_display_frequency=None):
         super().__init__()
 
         self.video_width = video_width
         self.video_height = video_height
+
 
         self.power_consumption = power_consumption
         self.power_consumption_square = power_consumption_square
@@ -29,7 +30,8 @@ class VideoPlayer(QWidget):
 
         # Store the list of video paths
         self.video_paths = video_paths
-        self.current_video_index = 0
+        self.current_video_index = -1
+        self.image_display_frequency = image_display_frequency
 
         # Open the first video using OpenCV
         self.cap = cv2.VideoCapture(self.video_paths[self.current_video_index])
@@ -43,19 +45,55 @@ class VideoPlayer(QWidget):
 
         # Start the timer to update the frame every 30ms (approx 30 fps)
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_frame)
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        self.timer.start(int(self.fps))
+        if display_images:
+            self.timer.timeout.connect(self.update_image_frame)
+            self.timer.start(int(image_display_frequency))
+        else:
+            self.timer.timeout.connect(self.update_video_frame)
+            self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+            self.timer.start(int(1000 / self.fps))
 
     def play_video(self):
         """Start or resume the video playback."""
-        self.timer.start(int(self.fps))
+        if self.image_display_frequency:
+            self.timer.start(int(self.image_display_frequency))
+        else:
+            self.timer.start(int(1000 / self.fps))
 
     def pause_video(self):
         """Pause the video playback."""
         self.timer.stop()
 
-    def update_frame(self):
+    def update_image_frame(self):
+        self.current_video_index = (self.current_video_index + 1) % len(self.video_paths)
+        frame = cv2.imread(self.video_paths[self.current_video_index])
+
+        # Resize the frame
+        frame_resized = cv2.resize(frame, (self.video_width, self.video_height))
+
+        # Convert the frame to QImage for displaying in the QLabel
+        frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame_rgb.shape
+        bytes_per_line = ch * w
+
+        if self.power_consumption:
+            random_h, random_w = random.randint(0, h - self.power_consumption_square - 1), random.randint(0, w - self.power_consumption_square - 1)
+
+            frame_rgb[random_h:random_h + self.power_consumption_square, random_w:random_w + self.power_consumption_square] = cv2.addWeighted(
+                frame_rgb[random_h:random_h + self.power_consumption_square, random_w:random_w + self.power_consumption_square],
+                self.power_contrast,
+                frame_rgb[random_h:random_h + self.power_consumption_square, random_w:random_w + self.power_consumption_square],
+                0,
+                self.power_brightness
+            )
+    
+        qimg = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
+        # Display the QImage on the label
+        pixmap = QPixmap.fromImage(qimg)
+        self.label.setPixmap(pixmap)
+
+    def update_video_frame(self):
         ret, frame = self.cap.read()
         if not ret:
             # If the current video ends, move to the next video
@@ -92,6 +130,15 @@ class VideoPlayer(QWidget):
         # Release the video capture when closing the window
         self.cap.release()
         event.accept()
+
+    def cleanup(self):
+        # Stop the timer if it's running
+        if self.timer.isActive():
+            self.timer.stop()
+
+    def __del__(self):
+        # Ensure resources are cleaned up if instance is deleted
+        self.cleanup()
 
 class TabbedApp(QWidget):
     def __init__(self):
@@ -149,6 +196,8 @@ class Tab1(QWidget):
         self.video_paths = []
         self.video_player = None
 
+        self.image_loop_time = 100 # ms
+
         self.power_consumption = False
         self.power_square_size = 16
         self.power_brightness = 0
@@ -188,12 +237,20 @@ class Tab1(QWidget):
         col1_layout.addRow(label_video_width, self.input_video_width)
         col1_layout.addRow(label_video_height, self.input_video_height)
 
+        layout_image_loop = QLabel("Image loop time:", self)
+        self.input_image_loop = QLineEdit(self)
+        self.input_image_loop.setPlaceholderText(str(self.image_loop_time))
+        self.input_image_loop.textChanged.connect(self.validate_image_loop_time)
+        col1_layout.addRow(layout_image_loop, self.input_image_loop)
+        
         # Add buttons below col1_layout
         col1_buttons_layout = QVBoxLayout()
 
         # Play and Pause buttons
         load_button = QPushButton("Load Videos", self)
         load_button.clicked.connect(self.load_videos)
+        load_images_button = QPushButton("Load Images", self)
+        load_images_button.clicked.connect(self.load_images)
         self.play_button = QPushButton("Play", self)
         self.play_button.clicked.connect(self.play_video)
         self.play_button.setVisible(False)
@@ -205,6 +262,7 @@ class Tab1(QWidget):
         self.stop_button.setVisible(False)
 
         col1_buttons_layout.addWidget(load_button)
+        col1_buttons_layout.addWidget(load_images_button)
         col1_buttons_layout.addWidget(self.play_button)
         col1_buttons_layout.addWidget(self.pause_button)
         col1_buttons_layout.addWidget(self.stop_button)
@@ -217,10 +275,10 @@ class Tab1(QWidget):
         col2_layout.addRow(self.checkbox_power)
 
         label_power_size_selector = QLabel("번동영역:", self)
-        self.power_size_selector = QComboBox(self)
-        self.power_size_selector.addItems(["16x16", "64x64", "128x128", "256x256"])
-        self.power_size_selector.currentIndexChanged.connect(self.power_update_square_size)
-        col2_layout.addRow(label_power_size_selector, self.power_size_selector)
+        self.power_size_selector = QLineEdit(self)
+        self.power_size_selector.setPlaceholderText(str(self.power_square_size))
+        # self.power_size_selector.currentIndexChanged.connect(self.power_update_square_size)
+        self.power_size_selector.textChanged.connect(self.validate_power_square)
 
         label_power_brightness = QLabel("Brightness:", self)
         self.input_power_brigthness = QLineEdit(self)
@@ -231,6 +289,7 @@ class Tab1(QWidget):
         self.input_power_contrast = QLineEdit(self)
         self.input_power_contrast.setPlaceholderText(str(self.power_contrast))
         self.input_power_contrast.textChanged.connect(self.validate_power_contrast)
+        col2_layout.addRow(label_power_size_selector, self.power_size_selector)
         col2_layout.addRow(label_power_brightness, self.input_power_brigthness)
         col2_layout.addRow(label_power_contrast, self.input_power_contrast)
 
@@ -240,9 +299,17 @@ class Tab1(QWidget):
 
         self.setLayout(tab1_layout)
 
-    def power_update_square_size(self):
-        selected_size = self.power_size_selector.currentText()
-        self.power_square_size = int(selected_size.split('x')[0])
+    def validate_power_square(self):
+        text = self.power_size_selector.text()
+        if text.isdigit():
+            self.power_square_size = int(text)
+        elif text:
+            self.power_size_selector.setText(text[:-1])
+            self.show_error("Only numeric values are allowed.")
+        else:
+            self.power_square_sizet = 16
+        # selected_size = self.power_size_selector.currentText()
+        # self.power_square_size = int(selected_size.split('x')[0])
 
     def checkbox_power_state_changed(self):
         if self.checkbox_power.isChecked():
@@ -292,6 +359,16 @@ class Tab1(QWidget):
         else:
             video_height = 448
 
+    def validate_image_loop_time(self):
+        text = self.input_image_loop.text()
+        if text.isdigit():
+            self.image_loop_time = int(text)
+        elif text:
+            self.input_image_loop.setText(text[:-1])
+            self.show_error("Only numeric values are allowed.")
+        else:
+            self.image_loop_time = 100
+
     def validate_power_brightness(self):
         text = self.input_power_brigthness.text()
         if text.startswith('-'):
@@ -335,9 +412,45 @@ class Tab1(QWidget):
         else:
             self.power_contrast = 1.0
 
+    def load_images(self):
+        self.video_paths, _ = QFileDialog.getOpenFileNames(self, "Select Image File", "", "Image Files (*.png *.jpg *.jpeg)")
+        global video_width, video_height
+        if self.video_player:
+            del self.video_player
+            self.stop_button.setVisible(False)
+            self.pause_button.setVisible(False)
+            self.play_button.setVisible(False)
+
+        if self.video_paths:
+            if self.power_consumption and (video_height < self.power_square_size or video_width < self.power_square_size):
+                self.show_error('power consumption square size cannot be bigger than video size')
+            else:
+                self.video_player = VideoPlayer(
+                    self.video_paths,
+                    self.x_axis,
+                    self.y_axis,
+                    video_width,
+                    video_height,
+                    self.power_consumption,
+                    self.power_square_size,
+                    self.power_brightness,
+                    self.power_contrast,
+                    display_images=True,
+                    image_display_frequency=int(self.image_loop_time)
+                )
+                self.video_player.show()
+
+                self.pause_button.setVisible(True)
+                self.stop_button.setVisible(True)
+
     def load_videos(self):
         self.video_paths, _ = QFileDialog.getOpenFileNames(self, "Select Video Files", "", "Video Files (*.mp4 *.avi *.mov)")
         global video_width, video_height
+        if self.video_player:
+            del self.video_player
+            self.stop_button.setVisible(False)
+            self.pause_button.setVisible(False)
+            self.play_button.setVisible(False)
 
         if self.video_paths:
             if self.power_consumption and (video_height < self.power_square_size or video_width < self.power_square_size):
@@ -392,6 +505,7 @@ class Tab2(QWidget):
         super().__init__()
 
         self.multiple_videos_paths = None
+        self.multiple_images_paths = None
         
         # Video display labels with reduced size
         self.video_left_label = QLabel(self)
@@ -402,6 +516,8 @@ class Tab2(QWidget):
         # Load video button
         self.load_button = QPushButton("Load Video", self)
         self.load_button.clicked.connect(self.load_video)
+        self.load_image_button = QPushButton("Load Image", self)
+        self.load_image_button.clicked.connect(self.load_image)
 
         # Square size selector
         self.size_selector = QComboBox(self)
@@ -429,6 +545,8 @@ class Tab2(QWidget):
 
         self.multiple_videos = QPushButton("Apply to Multiple Videos", self)
         self.multiple_videos.clicked.connect(self.apply_to_multiple_videos)
+        self.multiple_images = QPushButton("Apply to Multiple Images", self)
+        self.multiple_images.clicked.connect(self.apply_to_multiple_images)
 
         # Table to display coordinates
         self.coordinates_table = QTableWidget(self)
@@ -453,6 +571,7 @@ class Tab2(QWidget):
         # Layout
         layout = QVBoxLayout()
         layout.addWidget(self.load_button)
+        layout.addWidget(self.load_image_button)
 
         video_layout = QHBoxLayout()
         video_layout.addWidget(self.video_left_label)
@@ -470,6 +589,7 @@ class Tab2(QWidget):
         button_layout.addWidget(self.play_button)
         button_layout.addWidget(self.pause_button)
         button_layout.addWidget(self.multiple_videos)
+        button_layout.addWidget(self.multiple_images)
         
         # Spacer to align video with buttons
         spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
@@ -501,12 +621,12 @@ class Tab2(QWidget):
 
         # Timer for video playback
         self.timer = QTimer()
-        self.timer.timeout.connect(self.update_frame)
+        self.timer.timeout.connect(self.update_video_frame)
 
         # OpenCV Video Capture and variables
         self.video_path = None
         self.cap = None
-        self.curr_frame = None
+        self.frame = None
         self.video_width = None
         self.video_height = None
         self.fps = None
@@ -563,6 +683,8 @@ class Tab2(QWidget):
             self.brightness_input_field.setText(text[:-1])  # Remove last character
             self.show_error("Only numeric values are allowed.")
 
+        self.update_frame(self.frame)
+
     def is_float_number(self, text):
         try:
             float(text)
@@ -585,11 +707,14 @@ class Tab2(QWidget):
             self.contrast_input_field.setText(text[:-1])  # Remove last character
             self.show_error("Only numeric values are allowed.")
 
+        self.update_frame(self.frame)
+
     def show_error(self, message):
         QMessageBox.warning(self, "Invalid Input", message)
 
     def load_video(self):
         self.video_path, _ = QFileDialog.getOpenFileName(self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mov)")
+        self.image_path = None
         
         if self.video_path:
             self.pause_button.setVisible(True)
@@ -600,6 +725,34 @@ class Tab2(QWidget):
             self.selected_rect.clear()
             self.populate_coordinates_table()
 
+    def load_image(self):
+        self.image_path, _ = QFileDialog.getOpenFileName(self, "Select Image File", "", "Image Files (*.png *.jpg *.jpeg)")
+
+        if self.image_path:
+            self.play_button.setVisible(False)
+            self.pause_button.setVisible(False)
+
+            self.video_path = None
+            if self.cap:
+                self.cap.release()
+
+            self.frame = cv2.imread(self.image_path)
+
+            self.update_frame(self.frame)
+            self.populate_coordinates_table()
+
+            # frame_left, frame_right = self.modify_left_right_videos(self.frame)
+            # frame_left = self.resize_frame(frame_left)
+            # frame_right = self.resize_frame(frame_right)
+            # # frame_left = cv2.resize(frame_left, (400, 400))
+            # # frame_right = cv2.resize(frame_right, (400, 400))
+
+            # left_display = self.convert_frame_to_qimage(frame_left)
+            # self.video_left_label.setPixmap(QPixmap.fromImage(left_display))
+
+            # right_display = self.convert_frame_to_qimage(frame_right)
+            # self.video_right_label.setPixmap(QPixmap.fromImage(right_display))
+        
     def select_save_dir(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Directory", self.save_dir)
         if dir_path:
@@ -608,61 +761,89 @@ class Tab2(QWidget):
 
     def apply_to_multiple_videos(self):
         self.multiple_videos_paths, _ = QFileDialog.getOpenFileNames(self, "Select Video Files", "", "Video Files (*.mp4 *.avi *.mov)")
+        self.multiple_images_paths = None
+
+    def apply_to_multiple_images(self):
+        self.multiple_images_paths, _ = QFileDialog.getOpenFileNames(self, "Select Image Files", "", "Image Files (*.png *.jpg *.jpeg)")
+        self.multiple_videos_paths = None
 
     def save_video(self):
         global video_width, video_height
-        if not self.multiple_videos_paths and self.video_path:
-            self.multiple_videos_paths = [self.video_path]
 
-        for i, v in enumerate(self.multiple_videos_paths):
-            self.progress_label.setText(f'Done {i}/{len(self.multiple_videos_paths)}')
-
-            cap = cv2.VideoCapture(v)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if self.multiple_images_paths:
             counter = -1
-
             self.progress_bar.setValue(0)
-            self.progress_bar.setEnabled(True)  # Enable the progress bar to show it's active
-
-            # Define the codec and create VideoWriter object
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(os.path.join(self.save_dir, f'test{i+1}.mp4'), fourcc, self.fps, (video_width, video_height))
-
-            while cap.isOpened():
+            self.progress_bar.setEnabled(True)
+            for i, v in enumerate(self.multiple_images_paths):
                 counter += 1
-                save_ret, save_frame = cap.read()
-                if not save_ret:
-                    break
+                self.progress_label.setText(f'Done {i}/{len(self.multiple_images_paths)}')
 
-                # Update the progress bar
-                progress = int(counter * 100 / total_frames)
-                self.progress_bar.setValue(progress)
-                QApplication.processEvents()  # Update the UI to reflect progress
-
-                # Brightness adjustment for selected squares
+                save_frame = cv2.imread(v)
                 _, save_frame = self.modify_left_right_videos(save_frame)
-                # if self.selected_rect:
-                #     for rect in self.selected_rect:
-                #         x, y = rect
-                #         save_frame[y:y + self.square_size, x:x + self.square_size] = cv2.convertScaleAbs(
-                #             save_frame[y:y + self.square_size, x:x + self.square_size],
-                #             alpha=self.brightness_factor,
-                #             beta=50
-                #         )
 
-                # Write the frame
-                out.write(save_frame)
+                cv2.imwrite(os.path.join(self.save_dir, f'test{i+1}.jpg'), save_frame)
+                progress = int(counter / len(self.multiple_images_paths))
+                self.progress_bar.setValue(progress)
+            self.progress_label.setText(f'Finished')
+        elif self.multiple_videos_paths or self.video_path:
 
-            # Release resources after the saving is complete
-            cap.release()
-            out.release()
-            
-            # Set progress to 100% and disable the progress bar
-            self.progress_bar.setValue(100)
-            self.progress_bar.setEnabled(False)
+            if not self.multiple_videos_paths and self.video_path:
+                self.multiple_videos_paths = [self.video_path]
 
-        self.progress_label.setText(f'Finished')
+            if self.multiple_videos_paths:
+                for i, v in enumerate(self.multiple_videos_paths):
+                    self.progress_label.setText(f'Done {i}/{len(self.multiple_videos_paths)}')
 
+                    cap = cv2.VideoCapture(v)
+                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    fps = int(cap.get(cv2.CAP_PROP_FPS))
+                    counter = -1
+
+                    self.progress_bar.setValue(0)
+                    self.progress_bar.setEnabled(True)  # Enable the progress bar to show it's active
+
+                    # Define the codec and create VideoWriter object
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    out = cv2.VideoWriter(os.path.join(self.save_dir, f'test{i+1}.mp4'), fourcc, fps, (video_width, video_height))
+
+                    while cap.isOpened():
+                        counter += 1
+                        save_ret, save_frame = cap.read()
+                        if not save_ret:
+                            break
+
+                        # Update the progress bar
+                        progress = int(counter * 100 / total_frames)
+                        self.progress_bar.setValue(progress)
+                        QApplication.processEvents()  # Update the UI to reflect progress
+
+                        # Brightness adjustment for selected squares
+                        _, save_frame = self.modify_left_right_videos(save_frame)
+                        # if self.selected_rect:
+                        #     for rect in self.selected_rect:
+                        #         x, y = rect
+                        #         save_frame[y:y + self.square_size, x:x + self.square_size] = cv2.convertScaleAbs(
+                        #             save_frame[y:y + self.square_size, x:x + self.square_size],
+                        #             alpha=self.brightness_factor,
+                        #             beta=50
+                        #         )
+
+                        # Write the frame
+                        out.write(save_frame)
+
+                    # Release resources after the saving is complete
+                    cap.release()
+                    out.release()
+                    
+                    # Set progress to 100% and disable the progress bar
+                    self.progress_bar.setValue(100)
+                    self.progress_bar.setEnabled(False)
+
+                self.progress_label.setText(f'Finished')
+        elif self.frame is not None:
+            _, save_frame = self.modify_left_right_videos(self.frame)
+            cv2.imwrite(os.path.join(self.save_dir, f'test1.jpg'), save_frame)
+            self.progress_label.setText(f'Finished')
     def populate_coordinates_table(self):
         # Calculate the number of rows and columns
         global video_width, video_height
@@ -694,18 +875,8 @@ class Tab2(QWidget):
             item.setBackground(QColor('blue'))
             self.selected_rect.add(coord)
 
-        if self.curr_frame is not None and self.selected_rect:
-            frame_left, frame_right = self.modify_left_right_videos(self.curr_frame)
-            # frame_left = cv2.resize(frame_left, (self.display_width, self.display_height))
-            # frame_right = cv2.resize(frame_right, (self.display_width, self.display_height))
-            frame_left = self.resize_frame(frame_left)
-            frame_right = self.resize_frame(frame_right)
-
-            left_display = self.convert_frame_to_qimage(frame_left)
-            self.video_left_label.setPixmap(QPixmap.fromImage(left_display))
-
-            right_display = self.convert_frame_to_qimage(frame_right)
-            self.video_right_label.setPixmap(QPixmap.fromImage(right_display))
+        if self.frame is not None and self.selected_rect:
+            self.update_frame(self.frame)
 
     def modify_left_right_videos(self, frame):
         global video_width, video_height
@@ -721,31 +892,33 @@ class Tab2(QWidget):
                 x2 = x + self.square_size if x + self.square_size <= video_width-1 else video_width-1
                 y2 = y + self.square_size if y + self.square_size <= video_height-1 else video_height-1
 
+                x2_1 = x + self.square_size if x + self.square_size <= video_width else video_width
+                y2_1 = y + self.square_size if y + self.square_size <= video_height else video_height
+
                 frame_left = cv2.rectangle(frame_left, (x, y), (x2, y2), (0, 255, 0), 2)
-                frame_right[y:y2, x:x2] = cv2.addWeighted(frame_right[y:y2, x:x2], self.contrast_factor, frame_right[y:y2, x:x2], 0, self.brightness_factor)
+                frame_right[y:y2_1, x:x2_1] = cv2.addWeighted(frame_right[y:y2_1, x:x2_1], self.contrast_factor, frame_right[y:y2_1, x:x2_1], 0, self.brightness_factor)
 
         return frame_left, frame_right
 
-    def update_frame(self):
+    def update_frame(self, frame):
+        frame_left, frame_right = self.modify_left_right_videos(frame)
+        frame_left = self.resize_frame(frame_left)
+        frame_right = self.resize_frame(frame_right)
+
+        left_display = self.convert_frame_to_qimage(frame_left)
+        self.video_left_label.setPixmap(QPixmap.fromImage(left_display))
+
+        right_display = self.convert_frame_to_qimage(frame_right)
+        self.video_right_label.setPixmap(QPixmap.fromImage(right_display))
+
+    def update_video_frame(self):
         if self.cap and self.cap.isOpened() and self.is_playing:
-            ret, frame = self.cap.read()
+            ret, self.frame = self.cap.read()
             if not ret:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 return
 
-            self.curr_frame = frame
-
-            frame_left, frame_right = self.modify_left_right_videos(frame)
-            frame_left = self.resize_frame(frame_left)
-            frame_right = self.resize_frame(frame_right)
-            # frame_left = cv2.resize(frame_left, (400, 400))
-            # frame_right = cv2.resize(frame_right, (400, 400))
-
-            left_display = self.convert_frame_to_qimage(frame_left)
-            self.video_left_label.setPixmap(QPixmap.fromImage(left_display))
-
-            right_display = self.convert_frame_to_qimage(frame_right)
-            self.video_right_label.setPixmap(QPixmap.fromImage(right_display))
+            self.update_frame(self.frame)
 
     def convert_frame_to_qimage(self, frame):
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -759,6 +932,7 @@ class Tab2(QWidget):
         selected_size = self.size_selector.currentText()
         self.square_size = int(selected_size.split('x')[0])
         self.populate_coordinates_table()  # Update table when square size changes
+        self.update_frame(self.frame)
 
     def play_video(self):
         self.is_playing = True

@@ -417,6 +417,7 @@ class Tab1(QWidget):
         global video_width, video_height
         if self.video_player:
             del self.video_player
+            self.video_player = None
             self.stop_button.setVisible(False)
             self.pause_button.setVisible(False)
             self.play_button.setVisible(False)
@@ -448,6 +449,7 @@ class Tab1(QWidget):
         global video_width, video_height
         if self.video_player:
             del self.video_player
+            self.video_player = None
             self.stop_button.setVisible(False)
             self.pause_button.setVisible(False)
             self.play_button.setVisible(False)

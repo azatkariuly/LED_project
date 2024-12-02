@@ -2,6 +2,9 @@ import sys
 import cv2
 import random
 import os
+from pathlib import Path
+import urllib.parse
+from PIL import Image
 import math
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QLineEdit, QFormLayout, QPushButton, QFileDialog, QMessageBox, QCheckBox, QComboBox, QTableWidget, QProgressBar, QSpacerItem, QSizePolicy, QTableWidgetItem
@@ -14,7 +17,6 @@ video_height = 448
 class VideoPlayer(QWidget):
     def __init__(self, video_paths, x_axis, y_axis, video_width, video_height, power_consumption=False, power_consumption_square=None, power_brightness=None, power_contrast=None, display_images=False, image_display_frequency=None):
         super().__init__()
-
         self.video_width = video_width
         self.video_height = video_height
 
@@ -34,10 +36,15 @@ class VideoPlayer(QWidget):
         self.image_display_frequency = image_display_frequency
 
         # Open the first video using OpenCV
-        self.cap = cv2.VideoCapture(self.video_paths[self.current_video_index])
-        if not self.cap.isOpened():
-            print("Error: Couldn't open video.")
-            sys.exit()
+
+        if not display_images:
+            self.cap = cv2.VideoCapture(self.video_paths[self.current_video_index])
+
+            if not self.cap.isOpened():
+                print("Error: Couldn't open video.")
+                sys.exit()
+        else:
+            self.cap = None
 
         # Label to show video frames
         self.label = QLabel(self)
@@ -66,8 +73,11 @@ class VideoPlayer(QWidget):
 
     def update_image_frame(self):
         self.current_video_index = (self.current_video_index + 1) % len(self.video_paths)
-        frame = cv2.imread(self.video_paths[self.current_video_index])
-
+        curr_image_path = self.video_paths[self.current_video_index]
+        
+        # frame = cv2.imread(curr_image_path)
+        frame = np.array(Image.open(curr_image_path))
+    
         # Resize the frame
         frame_resized = cv2.resize(frame, (self.video_width, self.video_height))
 
@@ -128,7 +138,8 @@ class VideoPlayer(QWidget):
 
     def closeEvent(self, event):
         # Release the video capture when closing the window
-        self.cap.release()
+        if self.cap:
+            self.cap.release()
         event.accept()
 
     def cleanup(self):
@@ -296,6 +307,8 @@ class Tab1(QWidget):
         # Add both form layouts to the horizontal layout
         tab1_layout.addLayout(col1_layout)
         tab1_layout.addLayout(col2_layout)
+        # tab1_layout.setStretch(0, 1)
+        # tab1_layout.setStretch(1, 1)
 
         self.setLayout(tab1_layout)
 
@@ -439,6 +452,7 @@ class Tab1(QWidget):
                     display_images=True,
                     image_display_frequency=int(self.image_loop_time)
                 )
+                
                 self.video_player.show()
 
                 self.pause_button.setVisible(True)
@@ -489,6 +503,8 @@ class Tab1(QWidget):
     def stop_video(self):
         if hasattr(self, 'video_player'):
             self.video_player.close()
+            del self.video_player
+            self.video_player = None
             self.video_paths = None
             self.stop_button.setVisible(False)
             self.pause_button.setVisible(False)

@@ -3,3 +3,4 @@ media
 dist
 build
 *.mp4
+__pycache__

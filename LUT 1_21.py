@@ -2,14 +2,14 @@ import sys
 import cv2
 import random
 import os
-from pathlib import Path
-import urllib.parse
-from PIL import Image
 import math
 import numpy as np
+from PIL import Image
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QLineEdit, QFormLayout, QPushButton, QFileDialog, QMessageBox, QCheckBox, QComboBox, QTableWidget, QProgressBar, QSpacerItem, QSizePolicy, QTableWidgetItem
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QColor
+from tab3_demo import Tab3
+from tab4 import Tab4
 
 video_width = 800
 video_height = 448
@@ -17,9 +17,12 @@ video_height = 448
 class VideoPlayer(QWidget):
     def __init__(self, video_paths, x_axis, y_axis, video_width, video_height, power_consumption=False, power_consumption_square=None, power_brightness=None, power_contrast=None, display_images=False, image_display_frequency=None):
         super().__init__()
+
         self.video_width = video_width
         self.video_height = video_height
 
+        self.red_frame = np.zeros((video_height, video_width, 3), dtype=np.uint8)
+        self.red_frame[:, :, 0] = 255
 
         self.power_consumption = power_consumption
         self.power_consumption_square = power_consumption_square
@@ -36,15 +39,10 @@ class VideoPlayer(QWidget):
         self.image_display_frequency = image_display_frequency
 
         # Open the first video using OpenCV
-
-        if not display_images:
-            self.cap = cv2.VideoCapture(self.video_paths[self.current_video_index])
-
-            if not self.cap.isOpened():
-                print("Error: Couldn't open video.")
-                sys.exit()
-        else:
-            self.cap = None
+        self.cap = cv2.VideoCapture(self.video_paths[self.current_video_index])
+        if not self.cap.isOpened():
+            print("Error: Couldn't open video.")
+            sys.exit()
 
         # Label to show video frames
         self.label = QLabel(self)
@@ -71,13 +69,46 @@ class VideoPlayer(QWidget):
         """Pause the video playback."""
         self.timer.stop()
 
+    def download_frame_from_rtsp(self):
+        username = "admin"
+        password = "postech!8880"
+        ip_address = "61.84.167.193"
+        port = "554" # Usually 554 for RTSP
+        path = "profile1/media.smp" # Usually something like /stream1
+        rtsp_url = f"rtsp://{username}:{password}@{ip_address}:{port}/{path}"
+
+        # pause a player
+        self.pause_video()
+
+        # make a red screen
+        h, w, ch = self.video_height, self.video_width, 3
+        bytes_per_line = ch * w
+        qimg = QImage(self.red_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
+        pixmap = QPixmap.fromImage(qimg)
+        self.label.setPixmap(pixmap)
+
+        # request to rtsp and save image
+        cap = cv2.VideoCapture(rtsp_url)
+        if not cap.isOpened():
+            print('Error: Unable to connect to RTSP stream.')
+        else:
+            ret, frame = cap.read()
+            if not ret:
+                print('Error: Unable to fetch frame.')
+            else:
+                cv2.imwrite('src/images/test.jpg', frame)
+            cap.release()
+
+        # resume the player
+        self.play_video()
+
     def update_image_frame(self):
         self.current_video_index = (self.current_video_index + 1) % len(self.video_paths)
-        curr_image_path = self.video_paths[self.current_video_index]
-        
-        # frame = cv2.imread(curr_image_path)
-        frame = np.array(Image.open(curr_image_path))
-    
+        # frame = cv2.imread(self.video_paths[self.current_video_index])
+        frame = np.array(Image.open(self.video_paths[self.current_video_index]))
+        frame = frame[..., [2, 1, 0]]
+
         # Resize the frame
         frame_resized = cv2.resize(frame, (self.video_width, self.video_height))
 
@@ -138,8 +169,7 @@ class VideoPlayer(QWidget):
 
     def closeEvent(self, event):
         # Release the video capture when closing the window
-        if self.cap:
-            self.cap.release()
+        self.cap.release()
         event.accept()
 
     def cleanup(self):
@@ -177,6 +207,12 @@ class TabbedApp(QWidget):
         # Tab 2: Display different text
         self.tab2 = Tab2()
         self.tabs.addTab(self.tab2, "Solved Part_LUT")
+        
+        self.tab3 = Tab3()
+        self.tabs.addTab(self.tab3, "Test")
+        
+        self.tab4 = Tab4()
+        self.tabs.addTab(self.tab4, "New Part_LUT")
 
     def closeEvent(self, event):
         # # Close the video player if it is open
@@ -193,6 +229,14 @@ class TabbedApp(QWidget):
         # Clean up tab2 if it has any resources to stop
         if hasattr(self.tab2, 'cleanup'):
             self.tab2.cleanup()
+            
+        # Clean up tab3 if it has any resources to stop
+        if hasattr(self.tab3, 'cleanup'):
+            self.tab3.cleanup()
+            
+        # Clean up tab4 if it has any resources to stop
+        if hasattr(self.tab4, 'cleanup'):
+            self.tab4.cleanup()
 
         event.accept()
         event.accept()
@@ -271,12 +315,16 @@ class Tab1(QWidget):
         self.stop_button = QPushButton("Stop", self)
         self.stop_button.clicked.connect(self.stop_video)
         self.stop_button.setVisible(False)
+        self.get_frame_ai_button = QPushButton("Get Frame for AI", self)
+        # self.get_frame_ai_button.clicked.connect(self.video_player.download_frame_from_rtsp)
+        self.get_frame_ai_button.setVisible(False)
 
         col1_buttons_layout.addWidget(load_button)
         col1_buttons_layout.addWidget(load_images_button)
         col1_buttons_layout.addWidget(self.play_button)
         col1_buttons_layout.addWidget(self.pause_button)
         col1_buttons_layout.addWidget(self.stop_button)
+        col1_buttons_layout.addWidget(self.get_frame_ai_button)
         col1_layout.addRow(col1_buttons_layout)
 
         # Second column layout with QFormLayout
@@ -307,8 +355,6 @@ class Tab1(QWidget):
         # Add both form layouts to the horizontal layout
         tab1_layout.addLayout(col1_layout)
         tab1_layout.addLayout(col2_layout)
-        # tab1_layout.setStretch(0, 1)
-        # tab1_layout.setStretch(1, 1)
 
         self.setLayout(tab1_layout)
 
@@ -452,11 +498,13 @@ class Tab1(QWidget):
                     display_images=True,
                     image_display_frequency=int(self.image_loop_time)
                 )
-                
                 self.video_player.show()
 
                 self.pause_button.setVisible(True)
                 self.stop_button.setVisible(True)
+
+                self.get_frame_ai_button.clicked.connect(self.video_player.download_frame_from_rtsp)
+                self.get_frame_ai_button.setVisible(True)
 
     def load_videos(self):
         self.video_paths, _ = QFileDialog.getOpenFileNames(self, "Select Video Files", "", "Video Files (*.mp4 *.avi *.mov)")
@@ -503,12 +551,11 @@ class Tab1(QWidget):
     def stop_video(self):
         if hasattr(self, 'video_player'):
             self.video_player.close()
-            del self.video_player
-            self.video_player = None
             self.video_paths = None
             self.stop_button.setVisible(False)
             self.pause_button.setVisible(False)
             self.play_button.setVisible(False)
+            self.get_frame_ai_button.setVisible(False)
 
     def show_error(self, message):
         QMessageBox.warning(self, "Invalid Input", message)
